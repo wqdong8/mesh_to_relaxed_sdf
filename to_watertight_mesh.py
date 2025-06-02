@@ -61,6 +61,43 @@ def get_camera_transforms(scan_count, bounding_radius):
         camera_transforms.append(camera_transform)
     return camera_transforms
 
+# def is_inside_strict(grid_xyz, grid_udf, mesh_tracer, camera_transforms):
+#     """Determine inside points using relaxed visibility criteria.
+#     Points are considered outside if visible from any camera viewpoint."""
+#     # Initialize all points as inside; visibility will exclude outside points
+#     inside_mask = torch.ones(grid_xyz.shape[0], dtype=torch.bool, device=grid_xyz.device)
+#     active_mask = torch.ones_like(inside_mask)  # Tracks points still needing processing
+
+#     for camera_transform in camera_transforms:
+#         if not active_mask.any():
+#             break  # All points have been processed
+
+#         # Select currently active points
+#         current_indices = active_mask.nonzero().squeeze(1)
+#         current_xyz = grid_xyz[current_indices]
+
+#         # Compute ray origin (camera position) and direction
+#         ray_o = camera_transform[:3, 3].unsqueeze(0).expand(current_xyz.size(0), 3)
+#         ray_d = current_xyz - ray_o
+#         line_depth = torch.norm(ray_d, dim=-1, keepdim=True)
+#         ray_d = ray_d / (line_depth + 1e-6)  # Normalize direction
+
+#         # Get closest intersection depth of rays with mesh
+#         _, _, render_depth = mesh_tracer.ray_trace(ray_o, ray_d)
+
+#         # Determine if point is occluded (render depth < point distance)
+#         is_occluded = (render_depth < line_depth.squeeze(-1))
+
+#         # Mark visible (unoccluded) points as outside and stop tracking them
+#         external_points = ~is_occluded
+#         global_external_indices = current_indices[external_points]
+#         inside_mask[global_external_indices] = False
+#         active_mask[global_external_indices] = False
+
+#     # Zero out UDF values for inside points
+#     grid_udf[inside_mask] *= 0
+#     return grid_udf
+
 def is_inside_strict(grid_xyz, grid_udf, mesh_tracer, camera_transforms):
     """Determine inside points using strict visibility criteria.
     Points are considered inside only if they are occluded from all camera viewpoints."""
