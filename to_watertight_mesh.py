@@ -229,7 +229,7 @@ def main():
     )
     parser.add_argument(
         "--threshold",
-        default=0.1,
+        default=10,
         type= float,
         help="threshold of the inside points",
     )
