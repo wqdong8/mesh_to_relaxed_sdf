@@ -7,6 +7,7 @@ import trimesh
 import cumcubes
 import argparse
 import os
+from diso import DiffMC, DiffDMC
 
 def generate_dense_grid_points(
     bbox_min = np.array((-1.05, -1.05, -1.05)),
@@ -127,11 +128,20 @@ def is_inside_relax(grid_xyz, grid_udf, mesh_tracer, camera_transforms, threshol
     Points are considered inside if they are visible from fewer than threshold cameras."""
     # Initialize observation counter for each point
     observation_count = torch.zeros(grid_xyz.shape[0], dtype=torch.int, device=grid_xyz.device)
+    # Track points that still need processing (those with observation count <= threshold)
+    active_mask = torch.ones(grid_xyz.shape[0], dtype=torch.bool, device=grid_xyz.device)
     
     for camera_transform in camera_transforms:
+        if not active_mask.any():
+            break  # All points have been processed
+            
+        # Select currently active points
+        current_indices = active_mask.nonzero().squeeze(1)
+        current_xyz = grid_xyz[current_indices]
+        
         # Calculate ray origin (camera position) and direction
-        ray_o = camera_transform[:3, 3].unsqueeze(0).expand(grid_xyz.size(0), 3)
-        ray_d = grid_xyz - ray_o
+        ray_o = camera_transform[:3, 3].unsqueeze(0).expand(current_xyz.size(0), 3)
+        ray_d = current_xyz - ray_o
         line_depth = torch.norm(ray_d, dim=-1, keepdim=True)
         ray_d = ray_d / (line_depth + 1e-6)  # Normalize direction
         
@@ -142,7 +152,13 @@ def is_inside_relax(grid_xyz, grid_udf, mesh_tracer, camera_transforms, threshol
         is_occluded = (render_depth < line_depth.squeeze(-1))
         
         # Increment observation count for points that are not occluded (visible)
-        observation_count += (~is_occluded).int()
+        visible_points = ~is_occluded
+        global_visible_indices = current_indices[visible_points]
+        observation_count[global_visible_indices] += 1
+        
+        # Update active mask: deactivate points that exceed the threshold
+        exceeded_threshold = observation_count > threshold
+        active_mask[exceeded_threshold] = False
     
     # Points are considered inside if they are visible from fewer than threshold cameras
     inside_mask = (observation_count <= threshold)
@@ -150,6 +166,35 @@ def is_inside_relax(grid_xyz, grid_udf, mesh_tracer, camera_transforms, threshol
     # Set UDF to 0 for inside points
     grid_udf[inside_mask] *= 0
     return grid_udf
+
+# def is_inside_relax(grid_xyz, grid_udf, mesh_tracer, camera_transforms, threshold=10):
+#     """Determine inside points using relaxed visibility criteria.
+#     Points are considered inside if they are visible from fewer than threshold cameras."""
+#     # Initialize observation counter for each point
+#     observation_count = torch.zeros(grid_xyz.shape[0], dtype=torch.int, device=grid_xyz.device)
+    
+#     for camera_transform in camera_transforms:
+#         # Calculate ray origin (camera position) and direction
+#         ray_o = camera_transform[:3, 3].unsqueeze(0).expand(grid_xyz.size(0), 3)
+#         ray_d = grid_xyz - ray_o
+#         line_depth = torch.norm(ray_d, dim=-1, keepdim=True)
+#         ray_d = ray_d / (line_depth + 1e-6)  # Normalize direction
+        
+#         # Get closest intersection depth of rays with mesh
+#         _, _, render_depth = mesh_tracer.ray_trace(ray_o, ray_d)
+        
+#         # Determine if point is occluded (render depth < point distance)
+#         is_occluded = (render_depth < line_depth.squeeze(-1))
+        
+#         # Increment observation count for points that are not occluded (visible)
+#         observation_count += (~is_occluded).int()
+    
+#     # Points are considered inside if they are visible from fewer than threshold cameras
+#     inside_mask = (observation_count <= threshold)
+    
+#     # Set UDF to 0 for inside points
+#     grid_udf[inside_mask] *= 0
+#     return grid_udf
 
 
 def main():
@@ -194,6 +239,17 @@ def main():
         help="use strict method or not",
     )
     parser.add_argument(
+        "--use_dmc",
+        action="store_true",
+        help="use DiffDMC or not",
+    )
+    parser.add_argument(
+        "--scale",
+        default=1.0,
+        type= float,
+        help="scale of the mesh",
+    )
+    parser.add_argument(
         "--points_per_batch",
         default=45000000,
         type= int,
@@ -235,18 +291,28 @@ def main():
         i_end = min(i_start + batch_size, grid_xyz.shape[0])
         points = grid_xyz[i_start:i_end]
         points_udf = grid_udf[i_start:i_end]
-        points_sdf = inside_func(points, points_udf, f, camera_transforms)
+        points_sdf = inside_func(points, points_udf, f, camera_transforms, threshold=args.threshold)
         sdfs.append(points_sdf)
 
     sdfs = torch.cat(sdfs, dim=0)
 
     # Reshape SDF grid and extract mesh using marching cubes
     sdfs = sdfs.reshape(resolution+1, resolution+1, resolution+1)
-    v, f = cumcubes.marching_cubes(sdfs, 2/resolution)
-    v = v/(resolution+2) * 2 - 1
+    if not args.use_dmc:
+        v, f = cumcubes.marching_cubes(sdfs, 2/resolution)
+        v = v/(resolution+2) * 2 - 1
 
-    # Create mesh and extract largest component
-    wt_mesh = trimesh.Trimesh(vertices=v.cpu().numpy(), faces=f.cpu().numpy())
+        # Create mesh and extract largest component
+        wt_mesh = trimesh.Trimesh(vertices=v.cpu().numpy(), faces=f.cpu().numpy())
+    else:
+        eps = 2/resolution
+        diffdmc = DiffDMC(dtype=torch.float32).cuda()
+        vertices, faces = diffdmc(sdfs, isovalue=eps, normalize= False)
+        bbox_min = np.array((-args.scale, -args.scale, -args.scale))
+        bbox_max= np.array((args.scale, args.scale, args.scale))
+        bbox_size = bbox_max - bbox_min
+        vertices = (vertices + 1) / grid_size[0] * bbox_size[0] + bbox_min[0]
+        wt_mesh = trimesh.Trimesh(vertices=vertices.cpu().numpy(), faces=faces.cpu().numpy())
     components = wt_mesh.split(only_watertight=False)
     bbox = []
     for c in components:
