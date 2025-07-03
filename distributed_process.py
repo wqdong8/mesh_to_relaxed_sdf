@@ -5,6 +5,10 @@ import time
 import argparse
 import json
 import torch
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 """
 Example command:
@@ -72,11 +76,11 @@ def worker(
         
         # Unpack the item
         obj_path, model_id = item
-        print(f"Processing: {item} on gpu {gpu}")
+        logger.info(f"Processing: {item} on gpu {gpu}")
         # Skip already processed models
         if check_task_finish(model_id):
             queue.task_done()
-            print(f'======== {model_id} already processed ========')
+            logger.info(f'======== {model_id} already processed ========')
             continue
         
         try:
@@ -88,7 +92,7 @@ def worker(
             os.makedirs(samples_dir, exist_ok=True)
             
             # Step 1: Generate watertight mesh from input model
-            print(f"Creating watertight mesh for {model_id}")
+            logger.info(f"Creating watertight mesh for {model_id}")
             watertight_cmd = (
                 f"CUDA_VISIBLE_DEVICES={gpu} "
                 f"python3 to_watertight_mesh.py "
@@ -98,21 +102,21 @@ def worker(
                 f"processing.resolution={args.remesh_resolution} "
                 f"processing.scale=1.0 "
             )
-            # print(watertight_cmd)
+            # logger.info(watertight_cmd)
             watertight_result = subprocess.run(watertight_cmd, shell=True, capture_output=True, text=True)
             if watertight_result.returncode != 0:
-                print(f"Error creating watertight mesh for {model_id}: {watertight_result.stderr}")
+                logger.error(f"Error creating watertight mesh for {model_id}: {watertight_result.stderr}")
                 queue.task_done()
                 continue
             
             # Step 2: Sample points from the watertight mesh
             watertight_mesh_path = os.path.join(watertight_dir, f'{model_id}.obj')
             if not os.path.exists(watertight_mesh_path):
-                print(f"Watertight mesh not found for {model_id}")
+                logger.error(f"Watertight mesh not found for {model_id}")
                 queue.task_done()
                 continue
                 
-            print(f"Sampling from watertight mesh for {model_id}")
+            logger.info(f"Sampling from watertight mesh for {model_id}")
             sample_cmd = (
                 f"python3 mesh_sample.py "
                 f"input.mesh_path={watertight_mesh_path} "
@@ -121,10 +125,10 @@ def worker(
                 f"output.save_dir={os.path.join(samples_dir, model_id)} "
                 f"output.num_split={args.num_split} "
             )
-            # print(sample_cmd)
+            # logger.info(sample_cmd)
             sample_result = subprocess.run(sample_cmd, shell=True, capture_output=True, text=True)
             if sample_result.returncode != 0:
-                print(f"Error sampling from watertight mesh for {model_id}: {sample_result.stderr}")
+                logger.error(f"Error sampling from watertight mesh for {model_id}: {sample_result.stderr}")
                 queue.task_done()
                 continue
             
@@ -132,14 +136,14 @@ def worker(
             if not args.save_watertight_mesh:
                 if os.path.exists(watertight_mesh_path):
                     os.system(f"rm {watertight_mesh_path}")
-                    print(f"Deleted watertight mesh directory for {watertight_mesh_path}")
+                    logger.info(f"Deleted watertight mesh directory for {watertight_mesh_path}")
             
             # Update counter for successful processing
             with count.get_lock():
                 count.value += 1
                 
         except Exception as e:
-            print(f"Error processing {model_id}: {e}")
+            logger.error(f"Error processing {model_id}: {e}")
         finally:
             queue.task_done()
 
@@ -161,7 +165,7 @@ if __name__ == "__main__":
     with open(args.input_models_info, 'r') as f:
         model_items = json.load(f)
 
-    print(f"Total found {len(model_items)} objects.")
+    logger.info(f"Total found {len(model_items)} objects.")
     
     # Set end index if not specified
     if args.end_i == -1 or args.end_i > len(model_items):
@@ -169,7 +173,7 @@ if __name__ == "__main__":
 
     # Select models based on start and end indices
     model_items = model_items[args.start_i:args.end_i]
-    print(f"Selected {len(model_items)} objects to process.")
+    logger.info(f"Selected {len(model_items)} objects to process.")
     
     # Add items to the queue for processing
     for obj_path, model_id in model_items:
@@ -185,5 +189,5 @@ if __name__ == "__main__":
         queue.put(None)
 
     end_time = time.time()
-    print("All Processing Finished", "in", end_time - start_time, "seconds")
-    print(f"Total {count.value} objects successfully processed.")
+    logger.info("All Processing Finished in %s seconds", end_time - start_time)
+    logger.info("Total %s objects successfully processed.", count.value)
