@@ -5,9 +5,14 @@ import cubvh
 import torch
 import trimesh
 import cumcubes
-import argparse
 import os
+import sys
+from omegaconf import OmegaConf
+import logging
 from diso import DiffMC, DiffDMC
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def generate_dense_grid_points(
     bbox_min = np.array((-1.05, -1.05, -1.05)),
@@ -197,68 +202,10 @@ def is_inside_relax(grid_xyz, grid_udf, mesh_tracer, camera_transforms, threshol
 #     return grid_udf
 
 
-def main():
+def main(cfg):
     """Main function to convert a mesh to a watertight version."""
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--mesh_path",
-        type= str,
-        help="input mesh path",
-    )
-    parser.add_argument(
-        "--mesh_id",
-        type= str,
-        help="save mesh id",
-    )
-    parser.add_argument(
-        "--save_dir",
-        type= str,
-        help="mesh save dir",
-    )
-    parser.add_argument(
-        "--resolution",
-        default="512",
-        type= int,
-        help="resolution of the grid",
-    )
-    parser.add_argument(
-        "--num_camera",
-        default=100,
-        type= int,
-        help="number of virtual cameras",
-    )
-    parser.add_argument(
-        "--threshold",
-        default=10,
-        type= float,
-        help="threshold of the inside points",
-    )
-    parser.add_argument(
-        "--use_strict",
-        action="store_true",
-        help="use strict method or not",
-    )
-    parser.add_argument(
-        "--use_dmc",
-        action="store_true",
-        help="use DiffDMC or not",
-    )
-    parser.add_argument(
-        "--scale",
-        default=1.0,
-        type= float,
-        help="scale of the mesh",
-    )
-    parser.add_argument(
-        "--points_per_batch",
-        default=45000000,
-        type= int,
-        help="points per batch",
-    )
-    args, extras = parser.parse_known_args()
-
-    os.makedirs(args.save_dir, exist_ok=True)
-    mesh_path = args.mesh_path
+    os.makedirs(cfg.output.save_dir, exist_ok=True)
+    mesh_path = cfg.input.mesh_path
     mesh = trimesh.load(mesh_path, force='mesh')
 
     # Normalize mesh to [-1,1]
@@ -270,7 +217,7 @@ def main():
     vertices = (vertices - center) * scale
 
     # Calculate grid points UDF (unsigned distance field)
-    resolution = args.resolution
+    resolution = cfg.processing.resolution
     grid_xyz, grid_size = generate_dense_grid_points(resolution=resolution)
     grid_xyz = torch.FloatTensor(grid_xyz).cuda()
     f = cubvh.cuBVH(torch.as_tensor(vertices, dtype=torch.float32, device='cuda'), 
@@ -278,12 +225,12 @@ def main():
     grid_udf, _, _ = f.unsigned_distance(grid_xyz, return_uvw=False)
     
     # Process points in batches to manage memory usage
-    batch_size = args.points_per_batch  # ~8GB GPU memory for 45M points
+    batch_size = cfg.processing.points_per_batch  # ~8GB GPU memory for 45M points
     n_batches = int(math.ceil(grid_xyz.shape[0] / batch_size))
 
     # Generate camera viewpoints and select inside/outside determination method
-    camera_transforms = get_camera_transforms(scan_count=args.num_camera, bounding_radius=1.25)
-    inside_func = is_inside_strict if args.use_strict else is_inside_relax
+    camera_transforms = get_camera_transforms(scan_count=cfg.processing.num_camera, bounding_radius=1.25)
+    inside_func = is_inside_strict if cfg.processing.use_strict else is_inside_relax
 
     # Determine inside points in batches
     sdfs = []
@@ -291,14 +238,14 @@ def main():
         i_end = min(i_start + batch_size, grid_xyz.shape[0])
         points = grid_xyz[i_start:i_end]
         points_udf = grid_udf[i_start:i_end]
-        points_sdf = inside_func(points, points_udf, f, camera_transforms, threshold=args.threshold)
+        points_sdf = inside_func(points, points_udf, f, camera_transforms, threshold=cfg.processing.threshold)
         sdfs.append(points_sdf)
 
     sdfs = torch.cat(sdfs, dim=0)
 
     # Reshape SDF grid and extract mesh using marching cubes
     sdfs = sdfs.reshape(resolution+1, resolution+1, resolution+1)
-    if not args.use_dmc:
+    if not cfg.processing.use_dmc:
         v, f = cumcubes.marching_cubes(sdfs, 2/resolution)
         v = v/(resolution+2) * 2 - 1
 
@@ -307,12 +254,13 @@ def main():
     else:
         eps = 2/resolution
         diffdmc = DiffDMC(dtype=torch.float32).cuda()
-        vertices, faces = diffdmc(sdfs, isovalue=eps, normalize= False)
-        bbox_min = np.array((-args.scale, -args.scale, -args.scale))
-        bbox_max= np.array((args.scale, args.scale, args.scale))
+        vertices, faces = diffdmc(sdfs, isovalue=eps, normalize=False)
+        bbox_min = np.array((-cfg.processing.scale, -cfg.processing.scale, -cfg.processing.scale))
+        bbox_max= np.array((cfg.processing.scale, cfg.processing.scale, cfg.processing.scale))
         bbox_size = bbox_max - bbox_min
         vertices = (vertices + 1) / grid_size[0] * bbox_size[0] + bbox_min[0]
         wt_mesh = trimesh.Trimesh(vertices=vertices.cpu().numpy(), faces=faces.cpu().numpy())
+    
     components = wt_mesh.split(only_watertight=False)
     bbox = []
     for c in components:
@@ -323,8 +271,17 @@ def main():
     wt_mesh = components[max_component]
 
     # Save the watertight mesh
-    remesh_path = args.save_dir + '/' + f"{args.mesh_id}.obj"
+    remesh_path = os.path.join(cfg.output.save_dir, f"{cfg.input.mesh_id}.obj")
     wt_mesh.export(remesh_path)
+    logger.info(f"Watertight mesh saved to {remesh_path}")
+    return True
 
 if __name__ == "__main__":
-    main()
+    cfg = OmegaConf.load("configs/remesh.yaml")
+    # Read override parameters from command line arguments
+    cli_cfg = OmegaConf.from_dotlist(sys.argv[1:])
+
+    # Merge configurations (CLI overrides default values in file)
+    cfg = OmegaConf.merge(cfg, cli_cfg)
+
+    main(cfg)

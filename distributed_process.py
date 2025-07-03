@@ -92,11 +92,11 @@ def worker(
             watertight_cmd = (
                 f"CUDA_VISIBLE_DEVICES={gpu} "
                 f"python3 to_watertight_mesh.py "
-                f"--mesh_path {obj_path} "
-                f"--mesh_id {model_id} "
-                f"--save_dir {watertight_dir} "
-                f"--resolution {args.remesh_resolution} "
-                f"--scale 1.0 "
+                f"input.mesh_path={obj_path} "
+                f"input.mesh_id={model_id} "
+                f"output.save_dir={watertight_dir} "
+                f"processing.resolution={args.remesh_resolution} "
+                f"processing.scale=1.0 "
             )
             # print(watertight_cmd)
             watertight_result = subprocess.run(watertight_cmd, shell=True, capture_output=True, text=True)
@@ -115,11 +115,11 @@ def worker(
             print(f"Sampling from watertight mesh for {model_id}")
             sample_cmd = (
                 f"python3 mesh_sample.py "
-                f"--mesh_path {watertight_mesh_path} "
-                f"--mesh_id {model_id} "
-                f"--point_number {args.num_sample} "
-                f"--save_dir {os.path.join(samples_dir, model_id)} "
-                f"--num_split {args.num_split} "
+                f"input.mesh_path={watertight_mesh_path} "
+                f"input.mesh_id={model_id} "
+                f"sampling.point_number={args.num_sample} "
+                f"output.save_dir={os.path.join(samples_dir, model_id)} "
+                f"output.num_split={args.num_split} "
             )
             # print(sample_cmd)
             sample_result = subprocess.run(sample_cmd, shell=True, capture_output=True, text=True)

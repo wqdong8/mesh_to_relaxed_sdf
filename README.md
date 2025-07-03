@@ -13,6 +13,9 @@
 
 This repository aims to convert meshes into watertight models using a **R**elaxed **SDF** (Signed Distance Field) method. 
 
+## 🔥🔥 Latest News
+* July 3, 2025: Support Sharp Point Sampling (Dora); configuration management using OmegaConf.
+
 ### ❓What is Relaxed SDF?
 
 Relaxed SDF is an approach that represents 3D shapes using signed distance fields with more flexible constraints than traditional SDFs.
@@ -71,20 +74,20 @@ pip install -r requirements.txt
 ### To watertight mesh
 
 ```python
-python to_watertight_mesh.py --mesh_path examples/chair.obj --mesh_id chair --save_dir RSDF_datasets/watertight --resolution 512 --scale 1.0
+python to_watertight_mesh.py input.mesh_path=examples/chair.obj input.mesh_id=chair output.save_dir=RSDF_datasets/watertight processing.resolution=512 processing.scale=1.0
 ```
 
 <details> <summary>Others</summary>
 
 ```python
 # To watertight mesh use Strict DF
-python to_watertight_mesh.py --mesh_path examples/chair.obj --mesh_id chair --save_dir RSDF_datasets/watertight --resolution 512 --scale 1.0 --use_strict
+python to_watertight_mesh.py input.mesh_path=examples/chair.obj input.mesh_id=chair output.save_dir=RSDF_datasets/watertight processing.resolution=512 processing.scale=1.0 processing.use_strict=True
 ```
 </details>
 
 ### Data sample(for ShapeVAE)
 ```python
-python mesh_sample.py --mesh_path RSDF_datasets/watertight/chair.obj --mesh_id chair --point_number 200000 --save_dir RSDF_datasets/samples/chair --num_split 1
+python mesh_sample.py input.mesh_path=RSDF_datasets/watertight/chair.obj sampling.point_number=200000 output.save_dir=RSDF_datasets/samples/chair output.num_split=1
 ```
 
 ### 📁 Distributed process
